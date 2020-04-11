@@ -20,8 +20,6 @@ sem_t
 	TUTOR_ROOM,	  // manage tutors available
 	TUTORING;	  // for tutor to hold a student for tutoring
 
-pthread_mutex_t SAVE;
-
 // BEGIN Self expanetory typedefs
 typedef struct
 {
@@ -40,75 +38,66 @@ typedef struct
 
 student *students; // for students array pointer
 
-// QUEUE
-typedef struct node
-{
-	student *stud;
-	struct node *next_in_line;
-} *node_ptr;
+// PRIORITY QUEUE
+int CUR_SIZE = 0;
+student *QUEUE;
 
-node_ptr front = NULL;
-node_ptr rear = NULL;
-
-// readability
-int is_empty()
+static void swap(student *a, student *b)
 {
-	return (front == NULL); // if front is empty, there is nothing in the queue
+	student temp = *a;
+	*a = *b;
+	*b = temp;
 }
 
-int enqueue(student *value)
+void heapify(student chairs[], int n, int i) 
 {
-	node_ptr item = (node_ptr)malloc(sizeof(struct node));
-
-	if (item == NULL) // Check if 
-		return 0;
-
-	item->stud = value; // set the new item to hold the input student
-	item->next_in_line = (node_ptr)malloc(sizeof(struct node));
-
-	if (rear == NULL) // if rear is null, queue has nothing in it so .. .
+	int greatest = i;
+	int left = 2 * i + 1;
+	int right = 2 * i + 2;
+	if (left < n && chairs[left].priority > chairs[greatest].priority)
+		greatest = left;
+	if (right < n && chairs[right].priority > chairs[greatest].priority)
+		greatest = right;
+	if (greatest != i) 
 	{
-		front = rear = item; // set front and rear to new element
-		front->next_in_line = rear->next_in_line = NULL;
+		// swap and heapify
+		swap(&chairs[i], &chairs[greatest]);
+		heapify(chairs, n, greatest);
 	}
-	else
-	{
-		node_ptr walker = front; // temporary node for iteration
-		while (walker != NULL) // Walk for every list element from the back
-		{
-			// if the next students priority <= new students priority
-			if (walker->stud->priority < item->stud->priority) 
-			{
-				item->next_in_line = walker->next_in_line; // work new stud right into middle of queue
-				walker->next_in_line = item; // reset current node to point for new item
-				return 1; // exit out since were done at this point
-			}
-			walker = walker->next_in_line; // otherwise continue iterating
-		}
-		// if while loop iterated all the way to the back
-		rear->next_in_line = item; // put new item at the back
-		rear = item; 
-	}
-	return 1;
 }
 
-// tutor gets student off of queue
-student *dequeue()
+void heapSort(student chairs[], int n)
 {
-	if (is_empty()) // fail on empty
+	int i;
+	for (i = n / 2 - 1; i >= 0; i--) // for all levels
+		heapify(chairs, n, i); // heapify
+	for (i = n - 1; i >= 0; i--) // for all unordered data
 	{
-		printf("\nThe queue is empty!\n");
-		return NULL; // return null (fail) if nothing in queue
+		// swap misplaced values and heapify
+		swap(&chairs[0], &chairs[i]); 
+		heapify(chairs, i, 0);
 	}
-	node_ptr temp = front; // grab the front of the queue
-	front = front->next_in_line; // next in line becomes the front
+}
 
-	return temp->stud; // return dequeued student if successful
+void pushHeap(student chairs[], student s)
+{
+	chairs[CUR_SIZE] = s; // Add to end of the heap
+	CUR_SIZE++; // adjust size
+	heapSort(chairs, CUR_SIZE); // heap process
+}
+
+student *popHeap(student chairs[])
+{
+	student *ret = &chairs[0]; // grab root of the heap
+	CUR_SIZE--; // adjust size
+	chairs[0] = chairs[CUR_SIZE]; // Place last at the root
+	heapSort(chairs, CUR_SIZE); // heap process
+	return ret;
+
 }
 // END QUEUE
 
 student *student_holder;
-int done = 0;
 static void *coordinatorRoutine()
 {
 	int total_requests = 0;
@@ -118,12 +107,12 @@ static void *coordinatorRoutine()
 		sleep(TUTORING_TIME);   
 		sem_wait(&COORDINATOR);  // wait for coordinator to arrive and be signaled by a student
 
-		if (!done) // if not done
+		if (total_requests != NUM_STUDENTS * MAX_PRIORITY) // while max possible sessions is not reached
 		{
-			pthread_mutex_lock(&SAVE);
-			if (student_holder != NULL && enqueue(student_holder) < 1) // Enqueue a student if not null
-				printf("Failed to enqueue a student\n");
-			//student_holder == NULL;  
+			if (student_holder != NULL) // Enqueue a student if not null
+				pushHeap(QUEUE, *student_holder);
+			student_holder == NULL;  
+
 			sem_post(&QUEUE_SEM); // signal tutors that someone is in the queue
 			printf("Co: Student %d with priority %d in the queue. Waiting students now = %d. Total requests = %d.\n",
 				student_holder->id,
@@ -131,13 +120,9 @@ static void *coordinatorRoutine()
 				NUM_SEATS - ss_val,
 				++total_requests
 			);
-			pthread_mutex_unlock(&SAVE);
 		}
 		else
-		{
-			printf("All done\n");
-			pthread_exit(NULL); // Exit once everything is done
-		}
+			return NULL; // Exit once everything is done
 	}
 }
 
@@ -146,67 +131,63 @@ tutor *helping_tut; // holding vars for tutor
 int total_tutoring_sessions = 0;
 static void *tutorRoutine(void *id)
 {
-	tutor tut = tutors[(long) id]; // Keep tutor info handy for lengthy print statement
-	sem_post(&TUTOR_ROOM);		   // tutors populate
+	while (total_tutoring_sessions != NUM_STUDENTS * MAX_PRIORITY) // while max possible sessions is not reached
+	{
+		sem_post(&TUTOR_ROOM);		   // tutors populate
 
-	sem_wait(&QUEUE_SEM);			// Wait for something in the queue
-	to_tutor = dequeue();			// dequeue a student for tutoring
-	*helping_tut = tutors[(long)id]; // update global of tutoring info
+		sem_wait(&QUEUE_SEM);			// Wait for something in the queue
+		if (total_tutoring_sessions == NUM_STUDENTS * MAX_PRIORITY)
+			break;
 
-	sem_post(&TUTORING); 			// Start the tutoring session
-	printf("Tu: Student %d tutored by Tutor %d. Students tutored now = %d. Total sessions tutored = %d.\n", 
-		to_tutor->id, 
-		tut.id, 
-		++tut.students_tutored, 
-		++total_tutoring_sessions
-	);
+		to_tutor = popHeap(QUEUE);			// dequeue a student for tutoring
+		*helping_tut = tutors[(long)id]; // update global of tutoring info
 
-	if (!done) // If jobs not done
-		tutorRoutine(id); // Tutor starts over back at tutor room
-	else
-		pthread_exit(NULL); // Exit since were done
+		sem_post(&TUTORING); 			// Start the tutoring session
+		printf("Tu: Student %d tutored by Tutor %d. Students tutored now = %d. Total sessions tutored = %d.\n", 
+			to_tutor->id, 
+			tutors[(long) id].id, 
+			++tutors[(long) id].students_tutored, 
+			++total_tutoring_sessions
+		);
+	}
+	sem_post(&QUEUE_SEM);
+	return NULL; // Exit since were done
 }
 
 static void *studentRoutine(void *id)
 {
-	sem_getvalue(&WAITING_ROOM, &ss_val);
-	while (!ss_val)	// if student sem_val == 0. . .  
+	while (students[(long)id].priority) // while student priority is not 0
 	{
-		// Student goes back to programming
-		printf("St: Student %d found no empty chair. Will try again later\n", students[(long)id].id);
-		usleep(random() % PROGRAMMING_TIME);
+		sem_getvalue(&WAITING_ROOM, &ss_val);
+		while (!ss_val)	// if student sem_val == 0. . .  
+		{
+			// Student goes back to programming
+			printf("St: Student %d found no empty chair. Will try again later\n", students[(long)id].id);
+			usleep(random() % PROGRAMMING_TIME);
+		}
+		sem_wait(&WAITING_ROOM); // wait for students to arrive
+
+		sem_getvalue(&WAITING_ROOM, &ss_val); // update sem_val holder
+		printf("St: Student %d takes a seat. Empty chairs = %d\n", students[(long)id].id, ss_val);
+
+		*student_holder = students[(long)id]; // hold student	
+		sem_post(&COORDINATOR); //  and send them to coordinator.
+
+		sem_wait(&TUTOR_ROOM); // Make sure tutors are present at the csmc
+
+		sem_wait(&TUTORING); // Wait to be tutored
+		printf("St: Student %d recieved help from Tutor %d.\n", students[(long)id].id, helping_tut->id);
+		usleep(TUTORING_TIME); 	// tutoring time
+		students[(long)id].priority--; // Decrease students priority after tutoring
+
+		sem_post(&WAITING_ROOM); // Leave the waiting room
 	}
-	sem_wait(&WAITING_ROOM); // wait for students to arrive
-
-	sem_getvalue(&WAITING_ROOM, &ss_val); // update sem_val holder
-	printf("St: Student %d takes a seat. Empty chairs = %d\n", students[(long)id].id, ss_val);
-
-	*student_holder = students[(long)id]; // hold student	
-	sem_post(&COORDINATOR); //  and send them to coordinator.
-
-	sem_wait(&TUTOR_ROOM); // Make sure tutors are present at the csmc
-
-	sem_wait(&TUTORING); // Wait to be tutored
-	printf("St: Student %d recieved help from Tutor %d.\n", students[(long)id].id, helping_tut->id);
-	usleep(TUTORING_TIME); 	// tutoring time
-	students[(long)id].priority--; // Decrease students priority after tutoring
-
-	sem_post(&WAITING_ROOM); // Leave the waiting room
-
-	if (students[(long)id].priority) // If the priority != 0 . . .
-	{
-		printf("Student %d will return\n", students[(long)id].id);
-		studentRoutine(id); // repeat the cycle
-	}
-	else
-	{
-		printf("Student %d done with tutoring\n", students[(long)id].id);
-		pthread_exit(NULL); // exit the thread because student has completed all tutoring 
-	}
+	return NULL; // exit when thread is done
 }
 
 void *makeTuts()
 {
+	pthread_t tut_thread[NUM_TUTORS];
 	long counter;
 	for (counter = 0; counter < NUM_TUTORS; counter++)
 	{
@@ -215,26 +196,38 @@ void *makeTuts()
 		tutors[counter] = tut;
 
 		// Declare and create a thread
-		pthread_t tut_thread;
-		if (pthread_create(&tut_thread, NULL, tutorRoutine, (void *)counter) != 0)
-			printf("Failed to create thread for tutor.");
+		if (pthread_create(&tut_thread[counter], NULL, tutorRoutine, (void *)counter) != 0)
+			printf("Failed to create thread for tutor.\n");
 	}
+
+	// waiting for all threads to join 
+	for (counter = 0; counter < NUM_TUTORS; counter++)
+		pthread_join(tut_thread[counter], NULL);
+
+	sem_post(&COORDINATOR); // leave with the coordinator
+	return NULL;
 }
 
 void *makeStuds()
 {
+	pthread_t stud_thread[NUM_STUDENTS];
 	long counter;
-	for (counter = 0; counter < NUM_TUTORS; counter++)
+	for (counter = 0; counter < NUM_STUDENTS; counter++)
 	{
 		// create a new student
 		student stud = {counter, MAX_PRIORITY};
 		students[counter] = stud;
 
 		// Declare and create a thread 
-		pthread_t stud_thread;
-		if (pthread_create(&stud_thread, NULL, studentRoutine, (void *)counter) != 0)
-			printf("Failed to create thread for student.");
+		if (pthread_create(&stud_thread[counter], NULL, studentRoutine, (void *)counter) != 0)
+			printf("Failed to create thread for student.\n");
 	}
+
+	// waiting for all threads to join 
+	for (counter = 0; counter < NUM_STUDENTS; counter++)
+		pthread_join(stud_thread[counter], NULL);
+
+	return NULL;
 }
 
 // Factored out initializations from main if program started successfully
@@ -254,8 +247,6 @@ void initGlobals(char **argv)
 	sem_init(&QUEUE_SEM, 0, 0);
 	sem_init(&TUTOR_ROOM, 0, 0);
 	sem_init(&TUTORING, 0, 0);
-
-	pthread_mutex_init(&SAVE, NULL);
 }
 
 void main(int argc, char **argv)
@@ -270,9 +261,9 @@ void main(int argc, char **argv)
 
 	// init these here to make sure they persist
 	tutor tu[NUM_TUTORS];
-	student stu[NUM_STUDENTS];
+	student stu[NUM_STUDENTS], seats[NUM_SEATS];
 	tutors = tu;
-	students = stu;
+	students = stu; QUEUE = seats;
 
 	pthread_t cor, tut_maker, stud_maker; // define initial threads
 
